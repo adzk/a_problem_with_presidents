@@ -1,0 +1,180 @@
+-- insert into public.presidents table from source
+
+CREATE TABLE public.source
+(
+    name           VARCHAR,
+    birth_date     VARCHAR,
+    birth_place    VARCHAR,
+    death_date     VARCHAR,
+    death_location VARCHAR
+);
+
+COPY presidents (name,
+                 birth_date,
+                 birth_place,
+                 death_date,
+                 death_location)
+    FROM 'C:\Users\XYZ\PycharmProjects\a_problem_with_presidents\U.S. Presidents Birth and Death Information - Sheet1.csv'
+    DELIMITER ','
+    CSV HEADER;
+
+INSERT INTO public.presidents (id,
+                               name,
+                               birth_date,
+                               birth_place,
+                               death_date,
+                               death_location)
+
+
+SELECT id                                  AS id,
+       name                                AS name,
+       to_date(birth_date, 'Mon DD, YYYY') AS birth_date,
+       birth_place                         AS birth_place,
+       to_date(death_date, 'Mon DD, YYYY') AS death_date,
+       death_place                         AS death_location
+FROM public.source;
+
+
+-- TRANSFORM and ADD COLUMNS
+CREATE TABLE public.president_additions
+(
+    id             INT NOT NULL,
+    name           VARCHAR,
+    birth_date     DATE,
+    birth_place    VARCHAR,
+    death_date     DATE,
+    death_location VARCHAR,
+    birth_year     INT,
+    lived_years    INT,
+    lived_months   INT,
+    lived_days     INT,
+    alive          BOOL
+);
+
+
+INSERT INTO public.president_additions(id,
+                                       name,
+                                       birth_date,
+                                       birth_place,
+                                       death_date,
+                                       death_location,
+                                       birth_year,
+                                       lived_years,
+                                       lived_months,
+                                       lived_days,
+                                       alive)
+SELECT id                                                           AS id,
+       name                                                         AS name,
+       birth_date                                                   AS birth_date,
+       birth_place                                                  AS birth_place,
+       death_date                                                   AS death_date,
+       death_location                                               AS death_location,
+       CAST(EXTRACT(YEAR FROM birth_date) AS INT)                   AS birth_year,
+       CASE
+           WHEN death_date IS NULL
+               THEN CAST(DATE_PART('year', CURRENT_DATE) - DATE_PART('year', birth_date) AS INT)
+           ELSE CAST(DATE_PART('year', death_date) - DATE_PART('year', birth_date) AS INT)
+           END
+                                                                    AS lived_years,
+       CASE
+           WHEN death_date IS NULL
+               THEN (CAST(((DATE_PART('year', CURRENT_DATE) - DATE_PART('year', birth_date)) * 12)
+               + (DATE_PART('month', CURRENT_DATE) - DATE_PART('month', birth_date)) AS INT))
+           ELSE (CAST(((DATE_PART('year', death_date) - DATE_PART('year', birth_date)) * 12)
+               + (DATE_PART('month', death_date) - DATE_PART('month', birth_date)) AS INT))
+           END                                                      AS lived_months,
+       CASE
+           WHEN death_date IS NULL
+               THEN (CURRENT_DATE - birth_date)
+           ELSE (presidents.death_date - presidents.birth_date) END AS lived_days,
+       CAST(CASE
+                WHEN death_date IS NULL
+                    THEN 1
+                ELSE 0 END AS BOOL)                                 AS alive
+FROM public.presidents
+GROUP BY id,
+         name,
+         birth_date,
+         birth_place,
+         death_date,
+         death_location;
+
+
+-- CREATE STATISTCS table
+DROP TABLE temp_1;
+CREATE TEMP TABLE temp_1 AS
+SELECT CAST(AVG(lived_days) AS DECIMAL(27, 7))                              AS mean,
+       COUNT(DISTINCT id)                                                   AS weight,
+       CAST(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lived_days) AS INT) AS median,
+       CAST(MODE() WITHIN GROUP (ORDER BY lived_days) AS INT)               AS mode,
+       CAST(MIN(lived_days) AS INT)                                         AS min,
+       CAST(MAX(lived_days) AS INT)                                         AS max,
+       CAST(STDDEV(lived_days) AS DECIMAL(27, 7))                           AS standard_deviation
+FROM public.president_additions pa;
+
+
+CREATE TABLE public.president_statistics
+(
+    mean               DECIMAL(27, 7),
+    weighted_mean      DECIMAL(27, 7),
+    median             INT,
+    mode               INT,
+    min                INT,
+    max                INT,
+    standard_deviation DECIMAL(27, 7)
+);
+
+
+INSERT INTO public.president_statistics(mean,
+                                        weighted_mean,
+                                        median,
+                                        mode,
+                                        min,
+                                        max,
+                                        standard_deviation)
+SELECT mean                                                     AS mean,
+       CAST(SUM(mean * weight) / SUM(weight) AS DECIMAL(27, 7)) AS weighted_mean,
+       median                                                   AS median,
+       mode                                                     AS mode,
+       min                                                      AS min,
+       max                                                      AS max,
+       standard_deviation                                       AS standard_deviation
+FROM temp_1
+GROUP BY weight,
+         min,
+         max,
+         median,
+         mean,
+         mode,
+         standard_deviation;
+
+
+CREATE TABLE public.president_shortest_lived
+(
+    id             INT NOT NULL,
+    name           VARCHAR,
+    birth_date     DATE,
+    birth_place    VARCHAR,
+    death_date     DATE,
+    death_location VARCHAR,
+    birth_year     INT,
+    lived_years    INT,
+    lived_months   INT,
+    lived_days     INT,
+    alive          BOOL
+);
+INSERT INTO public.president_shortest_lived(id,
+                                            name,
+                                            birth_date,
+                                            birth_place,
+                                            death_date,
+                                            death_location,
+                                            birth_year,
+                                            lived_years,
+                                            lived_months,
+                                            lived_days,
+                                            alive)
+SELECT *
+FROM public.president_additions pa
+ORDER BY lived_days
+LIMIT 10;
